@@ -1,89 +1,98 @@
 import { useCallback, useRef, useEffect } from 'react'
 
 export function useSpeechSynthesis() {
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
   const speakingRef = useRef(false)
+  const queueRef = useRef<string[]>([])
+  const onEndGlobalRef = useRef<(() => void) | null>(null)
 
   const stop = useCallback(() => {
     speakingRef.current = false
+    queueRef.current = []
+    onEndGlobalRef.current = null
     window.speechSynthesis.cancel()
-    utteranceRef.current = null
   }, [])
 
-  // Cleanup on unmount (navigation)
   useEffect(() => {
-    return () => {
-      stop()
-    }
+    return () => { stop() }
   }, [stop])
 
+  const speakChunk = useCallback((chunk: string, voices: SpeechSynthesisVoice[]) => {
+    const utterance = new SpeechSynthesisUtterance(chunk)
+    utterance.rate = 0.90
+    utterance.pitch = 1.08
+    utterance.volume = 1.0
+
+    const preferred = ['Samantha', 'Google UK English Female', 'Microsoft Zira', 'Karen', 'Victoria']
+    for (const name of preferred) {
+      const match = voices.find(v => v.name.includes(name))
+      if (match) { utterance.voice = match; break }
+    }
+    if (!utterance.voice) {
+      const female = voices.find(v => v.name.toLowerCase().includes('female'))
+      if (female) utterance.voice = female
+    }
+
+    utterance.onend = () => {
+      if (!speakingRef.current) return
+      const next = queueRef.current.shift()
+      if (next) {
+        speakChunk(next, voices)
+      } else {
+        speakingRef.current = false
+        onEndGlobalRef.current?.()
+        onEndGlobalRef.current = null
+      }
+    }
+
+    utterance.onerror = (e) => {
+      if (e.error === 'interrupted') return
+      speakingRef.current = false
+      queueRef.current = []
+      onEndGlobalRef.current?.()
+      onEndGlobalRef.current = null
+    }
+
+    window.speechSynthesis.speak(utterance)
+  }, [])
+
   const speak = useCallback((text: string, onStart?: () => void, onEnd?: () => void) => {
-    // Cancel any in-progress speech
     speakingRef.current = false
+    queueRef.current = []
     window.speechSynthesis.cancel()
-    utteranceRef.current = null
 
-    const createAndSpeak = (voices: SpeechSynthesisVoice[]) => {
-      if (speakingRef.current) return // guard against double invocation
+    // Split on sentence boundaries, keeping chunks short for browser TTS stability
+    const raw = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? [text]
+    const chunks = raw.map(s => s.trim()).filter(Boolean)
+
+    const doSpeak = (voices: SpeechSynthesisVoice[]) => {
+      if (speakingRef.current) return
       speakingRef.current = true
+      onEndGlobalRef.current = onEnd ?? null
 
-      const utterance = new SpeechSynthesisUtterance(text)
-      utterance.rate = 0.90
-      utterance.pitch = 1.08
-      utterance.volume = 1.0
-
-      const preferred = [
-        'Samantha', 'Google UK English Female',
-        'Microsoft Zira', 'Karen', 'Victoria'
-      ]
-      for (const name of preferred) {
-        const match = voices.find(v => v.name.includes(name))
-        if (match) { utterance.voice = match; break }
-      }
-      if (!utterance.voice) {
-        const female = voices.find(v => v.name.toLowerCase().includes('female'))
-        if (female) utterance.voice = female
-      }
-
-      utterance.onstart = () => onStart?.()
-      utterance.onend = () => {
-        speakingRef.current = false
-        utteranceRef.current = null
-        onEnd?.()
-      }
-      utterance.onerror = (e) => {
-        // 'interrupted' fires when we .cancel() — not a real error
-        if (e.error === 'interrupted') return
-        speakingRef.current = false
-        utteranceRef.current = null
-        onEnd?.()
-      }
-
-      utteranceRef.current = utterance
-      window.speechSynthesis.speak(utterance)
+      const [first, ...rest] = chunks
+      queueRef.current = rest
+      onStart?.()
+      speakChunk(first, voices)
     }
 
     const voices = window.speechSynthesis.getVoices()
     if (voices.length > 0) {
-      createAndSpeak(voices)
+      doSpeak(voices)
     } else {
-      // Fire once when voices are ready, ignore subsequent firings
       const handler = () => {
         window.speechSynthesis.onvoiceschanged = null
-        createAndSpeak(window.speechSynthesis.getVoices())
+        doSpeak(window.speechSynthesis.getVoices())
       }
       window.speechSynthesis.onvoiceschanged = handler
-
-      // Safari fallback — poll after 600ms if event never fires
       setTimeout(() => {
         const v = window.speechSynthesis.getVoices()
         if (v.length > 0 && !speakingRef.current) {
           window.speechSynthesis.onvoiceschanged = null
-          createAndSpeak(v)
+          doSpeak(v)
         }
       }, 600)
     }
-  }, [])
+  }, [speakChunk])
 
   return { speak, stop }
 }

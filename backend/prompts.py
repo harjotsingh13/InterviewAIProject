@@ -75,6 +75,7 @@ Return only valid JSON. No markdown. No explanation. No code fences.
 }}
 Rules:
 - Only score on what the candidate actually said in the transcript.
+- For "evidence", extract SHORT VERBATIM quotes (max 12 words) directly from the CANDIDATE lines in the transcript. Do not paraphrase. If no evidence exists, use ["No relevant response recorded"].
 - If a dimension cannot be evaluated because the candidate skipped a question due to silence, or audio issues prevented gathering data, mark the label as "INSUFFICIENT_DATA", the score as 0, and evidence as ["Skipped due to silence / low confidence audio"]. Do not penalize the overall verdict unfairly if one dimension is missing.
 
 ADVANCE if overall 7 or above and no dimension below 5 (ignoring INSUFFICIENT_DATA).

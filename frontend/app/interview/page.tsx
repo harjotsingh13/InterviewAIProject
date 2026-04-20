@@ -66,6 +66,16 @@ export default function InterviewPage() {
           <div className="text-white/60 font-medium tracking-widest text-xs uppercase px-3 py-1 bg-white/5 rounded-full border border-white/10">
             Aria AI Interview
           </div>
+          <div className="flex items-center gap-2">
+            {[1, 2, 3, 4].map((step) => (
+              <div
+                key={step}
+                className={`h-1.5 rounded-full transition-all duration-500 ${
+                  turnCount >= step ? 'w-6 bg-violet-400' : 'w-3 bg-white/15'
+                }`}
+              />
+            ))}
+          </div>
         </motion.div>
       )}
 

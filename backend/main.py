@@ -293,6 +293,9 @@ def get_aria_response(req: RespondRequest):
 def end_interview(req: EndRequest):
     try:
         transcript_lines = []
+        candidate_turns = [m for m in req.history if m.role == "user"]
+        silent_turns = [m for m in candidate_turns if len(m.content.strip(".").strip()) < 3]
+        
         for m in req.history:
             speaker = "CANDIDATE" if m.role == "user" else "ARIA"
             transcript_lines.append(f"{speaker}: {m.content}")
@@ -312,6 +315,12 @@ def end_interview(req: EndRequest):
             raise ValueError("LLM returned malformed JSON.")
 
         verdict = report.get("verdict", "REVIEW")
+        
+        # Override to REVIEW if candidate was largely silent
+        if candidate_turns and len(silent_turns) / max(len(candidate_turns), 1) >= 0.5:
+            verdict = "REVIEW"
+            report["verdict"] = "REVIEW"
+            report["recommendation"] = "Insufficient verbal data — recommend a re-interview or manual review."
 
         report_id = str(uuid.uuid4())
         db_exec(
