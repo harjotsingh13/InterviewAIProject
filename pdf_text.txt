@@ -1,0 +1,339 @@
+Cuemath AI Tutor Screener — Final Workplan
+100% Free | 2 API Keys Only | Simple Stack
+Tech Stack (Final)
+Layer
+Tool
+Cost
+Frontend
+Next.js 14 + Tailwind CSS + Three.js
+Free
+Voice Input (STT)
+Groq Whisper API
+Free forever
+Voice Output (TTS)
+Browser SpeechSynthesis API
+Free built-in
+AI Conversation
+Anthropic Claude claude-sonnet-4-20250514
+$5 free credits on signup
+Backend
+FastAPI (single main.py file)
+Free
+Database
+SQLite (built into Python, zero setup)
+Free
+Frontend Deploy
+Vercel
+Free tier
+Backend Deploy
+Railway
+Free tier
+API keys needed: 2
+1. 
+GROQ_API_KEY  — signup at console.groq.com (free forever)
+2. 
+ANTHROPIC_API_KEY  — signup at console.anthropic.com ($5 free credits)
+Project Structure
+Backend (main.py) — 5 Endpoints Only
+cuemath-screener/
+├── frontend/
+│   ├── app/
+│   │   ├── page.tsx                 ← welcome screen
+│   │   ├── interview/page.tsx       ← main interview screen
+│   │   └── report/[id]/page.tsx     ← recruiter report screen
+│   ├── components/
+│   │   ├── AudioOrb.tsx             ← Three.js orb
+│   │   └── ScoreCard.tsx            ← report dimension cards
+│   └── hooks/
+│       └── useInterview.ts          ← state machine + voice loop
+│
+└── backend/
+├── main.py                      ← entire backend (5 endpoints, ~180
+lines)
+├── prompts.py                   ← Claude system prompt + scoring prompt
+├── db.py                        ← SQLite setup
+└── requirements.txt
+python
+from fastapi import FastAPI, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+import anthropic, groq, sqlite3, uuid, json, base64
+from prompts import ARIA_SYSTEM_PROMPT, SCORING_PROMPT
+app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"])
+groq_client  = groq.Groq(api_key=GROQ_API_KEY)
+claude_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+# 1. Start session
+@app.post("/interview/start")
+def start():
+    sid = str(uuid.uuid4())
+    db_exec("INSERT INTO sessions VALUES (?,?)", [sid, "active"])
+return {"session_id": sid}
+# 2. Transcribe audio (Groq Whisper)
+@app.post("/interview/transcribe")
+async def transcribe(audio: UploadFile):
+    result = groq_client.audio.transcriptions.create(
+        model="whisper-large-v3",
+file=("audio.webm", await audio.read()),
+        language="en"
+)
+return {"transcript": result.text}
+# 3. Get Aria's reply (Claude)
+@app.post("/interview/respond")
+def respond(payload: dict):
+# payload: { history: [...messages], current_question: str }
+    res = claude_client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=250,
+        system=ARIA_SYSTEM_PROMPT.replace("{QUESTION}", payload["current_questi
+        messages=payload["history"]
+)
+    text = res.content[0].text
+# strip intent tag before returning spoken text
+    spoken = text.split("[INTENT:")[0].strip()
+    intent = "SUFFICIENT"
+if "[INTENT:" in text:
+        intent = text.split("[INTENT:")[1].replace("]","").strip()
+return {"text": spoken, "intent": intent}
+# 4. End interview + score
+@app.post("/interview/end")
+def end(payload: dict):
+# payload: { session_id: str, history: [...] }
+    transcript = "\n\n".join(
+f"{'CANDIDATE' if m['role']=='user' else 'ARIA'}: {m['content']}"
+for m in payload["history"]
+)
+    res = claude_client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1500,
+        messages=[{"role":"user","content": SCORING_PROMPT.replace("{TRANSCRIPT
+)
+    report = json.loads(res.content[0].text)
+    rid = str(uuid.uuid4())
+    db_exec("INSERT INTO reports VALUES (?,?,?,?)",
+[rid, payload["session_id"], transcript, json.dumps(report)])
+return {"report_id": rid, "report": report}
+Prompts (prompts.py)
+Aria System Prompt
+# 5. Fetch report
+@app.get("/report/{rid}")
+def get_report(rid: str):
+    row = db_fetch("SELECT scores FROM reports WHERE id=?", [rid])
+return json.loads(row[0])
+python
+Scoring Prompt
+
+
+ARIA_SYSTEM_PROMPT = """
+You are Aria, a warm and professional interviewer for Cuemath, a children's mat
+You are screening tutor candidates for soft skills only — NOT math knowledge.
+You assess: communication clarity, patience, warmth, simplification ability, Eng
+Rules:
+- Keep all responses under 3 sentences
+- Sound natural and warm, never robotic
+- Always end with a question or prompt
+- After each candidate response, decide:
+    SUFFICIENT   → candidate gave a clear, specific answer — move on
+    PROBE_NEEDED → answer was vague or too short — ask one follow-up
+    REDIRECT     → candidate went off-topic — bridge back gently
+    WRAP         → all questions done — close the interview warmly
+- Always append [INTENT:XXXX] at the very end of your message (candidate won't 
+Current question to ask or follow up on:
+{QUESTION}
+"""
+python
+
+
+SCORING_PROMPT = """
+Evaluate this tutor candidate interview for Cuemath.
+Return ONLY valid JSON. No markdown, no explanation, no code fences.
+{
+  "verdict": "ADVANCE" or "REVIEW" or "DECLINE",
+  "overall_score": <1-10 number>,
+  "summary": "<2 sentence summary>",
+  "recommendation": "<1 sentence for recruiter>",
+  "dimensions": {
+    "communication_clarity":  {"score": <1-10>, "evidence": ["quote1", "quote2"
+    "patience_empathy":       {"score": <1-10>, "evidence": ["quote1", "quote2"
+    "simplification_ability": {"score": <1-10>, "evidence": ["quote1", "quote2"
+    "english_fluency":        {"score": <1-10>, "evidence": ["quote1", "quote2"
+    "warmth_enthusiasm":      {"score": <1-10>, "evidence": ["quote1", "quote2"
+  }
+}
+Verdict rules:
+- ADVANCE  = overall_score >= 7 AND no dimension below 5
+- REVIEW   = overall_score 5.5-6.9 OR one dimension below 5
+- DECLINE  = overall_score < 5.5 OR two+ dimensions below 5
+TRANSCRIPT:
+{TRANSCRIPT}
+"""
+Frontend — Interview Screen
+Voice Loop (useInterview.ts)
+Silence VAD (simple, no library)
+START
+→ MediaRecorder starts (WebM/Opus)
+→ Silence VAD: if mic quiet for 1.5s → stop recording
+→ POST audio blob → /interview/transcribe → get transcript
+→ Show candidate transcript on screen
+→ POST history → /interview/respond → get { text, intent }
+→ Show Aria text as subtitle
+→ Browser SpeechSynthesis speaks Aria's text
+→ On speech end → check intent:
+PROBE_NEEDED / REDIRECT → loop back to MediaRecorder
+SUFFICIENT              → advance question index → loop
+WRAP                    → POST /interview/end → go to report page
+typescript
+Three.js Audio Orb (AudioOrb.tsx)
+// Web Audio API AnalyserNode approach
+const analyser = audioCtx.createAnalyser();
+const data = new Uint8Array(analyser.frequencyBinCount);
+function checkSilence() {
+  analyser.getByteFrequencyData(data);
+const avg = data.reduce((a, b) => a + b) / data.length;
+if (avg < 8) silenceFrames++;
+// threshold: very quiet
+else silenceFrames = 0;
+if (silenceFrames > 45) stopRecording(); // 1.5s at 30fps
+requestAnimationFrame(checkSilence);
+}
+typescript
+// Sphere with 64x64 segments
+// In animation loop: displace vertices using sin waves + analyser amplitude
+// orbState prop controls color:
+//   'listening' → #3b82f6 (blue)
+//   'thinking'  → #ffffff at 30% opacity (slow pulse)
+//   'speaking'  → #f59e0b (amber)
+//   'idle'      → #6b7280 (gray)
+// Vertex displacement:
+positions[i]
++= Math.sin(time + i * 0.5) * amplitude * 0.3;
+positions[i + 1] += Math.cos(time + i * 0.3) * amplitude * 0.3;
+SpeechSynthesis (TTS — free)
+Screens
+1. Welcome Screen (page.tsx)
+Cuemath logo
+"Hi! I'm Aria, your interviewer today."
+Name input field
+"Allow microphone" button (triggers getUserMedia)
+Mic test: candidate speaks, sees waveform confirm it works
+"Start Interview" CTA
+typescript
+function ariaSpeak(text: string, onEnd: () => void) {
+const utter = new SpeechSynthesisUtterance(text);
+  utter.rate
+= 0.90;
+// slightly slower = warmer feel
+  utter.pitch = 1.10;
+// pick best female voice available
+const voices = speechSynthesis.getVoices();
+  utter.voice = voices.find(v =>
+    v.name.includes('Samantha') ||
+// macOS
+    v.name.includes('Google UK') ||
+// Chrome
+    v.name.includes('Female')
+) || voices[0];
+  utter.onend = onEnd;
+  speechSynthesis.speak(utter);
+}
+2. Interview Screen (interview/page.tsx)
+Full dark background (
+#0f0f1a )
+Center: Three.js orb (color changes with state)
+Bottom center: Aria's current text (subtitle style, white)
+Top center: Candidate's transcript (muted gray, smaller)
+No timer, no score, no rubric visible to candidate
+Small "End early" button bottom-right (emergency only)
+3. Thank You Screen
+"Thank you, [Name]! We'll review your session and be in touch within 24 hours."
+Cuemath branding
+No score shown to candidate
+4. Report Screen (report/[id]/page.tsx)
+Verdict badge: ADVANCE (green) / REVIEW (amber) / DECLINE (red)
+Overall score: large number center
+5 dimension cards:
+Dimension name
+Score / 10
+Animated fill bar (Framer Motion)
+2 evidence quotes in italics
+Summary paragraph
+Recruiter recommendation
+Full transcript (collapsed by default, expand button)
+"Save as PDF" → browser print dialog
+Question Bank (5 Questions)
+
+
+typescript
+const QUESTIONS = [
+// Q1 — simplification + clarity
+"Let's start — can you explain what a fraction is to a 9-year-old who has nev
+// Q2 — patience + empathy
+"A student has been staring at a problem for 5 minutes and says 'I just don't 
+// Q3 — warmth + handling frustration
+"How do you handle a student who keeps getting wrong answers and is starting 
+// Q4 — real example probe
+"Tell me about a time you had to explain something complicated in a simple way
+// Q5 — professionalism + warmth
+"A parent messages saying their child hasn't improved in 3 weeks. How do you 
+];
+Edge Cases
+Situation
+Handler
+Vague / short answer
+Claude returns PROBE_NEEDED → follow-up (max 2x per
+question)
+Long tangent
+Claude returns REDIRECT → bridge back
+8s silence after question
+Aria says "Take your time, I'm listening" via SpeechSynthesis
+Mic denied
+Show setup guide: "Please allow mic access in your browser
+settings"
+Groq API error
+Retry once → if fails again, Aria says "Could you repeat that?"
+Non-English detected
+Claude notes in fluency score automatically
+SpeechSynthesis not loading
+voices
+Add 500ms delay + getVoices() retry (browser quirk fix)
+Sprint Plan (5 Days)
+Day 1 — Backend
+ FastAPI project setup
+ SQLite db.py (2 tables: sessions, reports)
+ All 5 endpoints working
+ Test with Postman: transcribe audio file → get transcript
+Day 2 — Voice loop
+ Next.js app setup + Tailwind
+ MediaRecorder → POST to /transcribe → show transcript
+ Silence VAD working
+ POST to /respond → SpeechSynthesis speaks reply
+ Full loop working (ugly UI, just functional)
+Day 3 — Interview UI
+ Three.js AudioOrb with 3 color states
+ Interview screen layout (dark, centered)
+ State machine: IDLE → LISTENING → THINKING → SPEAKING
+ Framer Motion transitions between states
+Day 4 — Scoring + Report
+ /interview/end endpoint + Claude scoring
+ Report page: verdict badge, score bars, evidence quotes
+ Framer Motion reveal animations on report
+Day 5 — Polish + Deploy
+ Welcome screen + thank you screen
+ All edge case handlers
+ Deploy: Vercel (frontend) + Railway (backend)
+ Full test: complete 10-min interview → report generated
+Total Cost
+Groq Whisper
+$0 (free forever)
+Anthropic Claude
+$0 ($5 free credits, ~100 interviews)
+Railway backend
+$0 (free tier)
+Vercel frontend
+$0 (free tier)
+Total
+$0
+API Keys Needed
+1. 
+GROQ_API_KEY  → console.groq.com → Create API Key (free, no card)
+2. 
+ANTHROPIC_API_KEY  → console.anthropic.com → Get API Key ($5 free credits)
