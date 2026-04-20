@@ -1,0 +1,5 @@
+
+backend/.env
+backend/*.db
+backend/__pycache__/
+backend/temp_audio_*.webm
