@@ -1,9 +1,17 @@
 'use client'
+import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
 
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
 export default function HomePage() {
   const router = useRouter()
+
+  // Wake up Render backend as soon as homepage loads
+  useEffect(() => {
+    fetch(`${API}/docs`).catch(() => {})
+  }, [])
 
   return (
     <main className="min-h-screen bg-[#0a0a14] flex items-center justify-center px-4 relative overflow-hidden text-white font-sans">
