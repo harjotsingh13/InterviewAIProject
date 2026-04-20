@@ -13,10 +13,13 @@ def init_db():
             status TEXT,
             q1 TEXT,
             q2 TEXT,
-            current_q INTEGER DEFAULT 1,
-            followups_asked INTEGER DEFAULT 0
+            interview_state TEXT DEFAULT 'MIC_CHECK'
         )
     """)
+    try:
+        c.execute("ALTER TABLE sessions ADD COLUMN silence_retries INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     c.execute("""
         CREATE TABLE IF NOT EXISTS reports (
             id TEXT PRIMARY KEY,

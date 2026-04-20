@@ -13,11 +13,12 @@ import re
 import random
 from datetime import datetime
 from dotenv import load_dotenv
-from prompts import ARIA_SYSTEM_PROMPT, SCORING_PROMPT
+from prompts import ARIA_SYSTEM_PROMPT, SCORING_PROMPT, INTENT_CLASSIFIER_PROMPT, AUDIO_CLEANUP_PROMPT
 from db import init_db, db_exec, db_fetch, db_fetchall
 
 load_dotenv()
 
+# Application startup
 app = FastAPI()
 
 app.add_middleware(
@@ -65,11 +66,9 @@ def gemini_generate(system_instruction: str, prompt_or_contents, json_mode: bool
             err_str = str(e).lower()
             # Only continue cascade on quota/rate errors
             if "429" in str(e) or "quota" in err_str or "rate" in err_str:
-                # Brief delay before trying next model to avoid burst-rate issues
                 if i < len(GEMINI_MODELS) - 1:
                     time.sleep(1.5)
                 continue
-            # For other errors (auth, bad request, etc.) fail immediately
             raise HTTPException(status_code=500, detail=f"Gemini error ({model_name}): {str(e)}")
     raise HTTPException(
         status_code=429,
@@ -97,18 +96,6 @@ class EndRequest(BaseModel):
     history: List[Message]
     duration_seconds: int
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-FILLER_WORDS = re.compile(
-    r'\b(um+|uh+|er+|ah+|like|you know|i mean|basically|literally|actually|sort of|kind of)\b',
-    re.IGNORECASE
-)
-
-def count_filler_words(text: str) -> int:
-    return len(FILLER_WORDS.findall(text))
-
-
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 BUCKET_1_SIMPLIFICATION = [
@@ -130,8 +117,8 @@ def start_interview(req: StartRequest):
     q1 = random.choice(BUCKET_1_SIMPLIFICATION)
     q2 = random.choice(BUCKET_2_SOFTSKILLS)
     db_exec(
-        "INSERT INTO sessions (id, candidate_name, created_at, status, q1, q2, current_q, followups_asked) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        [session_id, req.candidate_name, datetime.utcnow().isoformat(), "active", q1, q2, 1, 0]
+        "INSERT INTO sessions (id, candidate_name, created_at, status, q1, q2, interview_state) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [session_id, req.candidate_name, datetime.utcnow().isoformat(), "active", q1, q2, "MIC_CHECK"]
     )
     return {"session_id": session_id, "q1": q1, "q2": q2}
 
@@ -150,7 +137,13 @@ async def transcribe_audio(audio: UploadFile = File(...)):
                 language="en",
                 response_format="text"
             )
-        return {"transcript": transcription.strip()}
+            
+        transcript = transcription.strip()
+        lower_t = transcript.lower().strip(".,!? ")
+        if lower_t in ["thank you", "bye", "thanks", "thanks for watching", "okay", "hmm", "um", "uh", "ah"]:
+            transcript = ".."
+            
+        return {"transcript": transcript}
     except Exception as e:
         error_str = str(e).lower()
         if "too short" in error_str or "0.01 seconds" in error_str:
@@ -160,71 +153,145 @@ async def transcribe_audio(audio: UploadFile = File(...)):
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
 
+def run_audio_cleanup(transcript: str) -> dict:
+    if not transcript or len(transcript.split()) < 2:
+        return {"is_garbled": False, "confidence": "LOW"}
+    prompt = AUDIO_CLEANUP_PROMPT.format(TRANSCRIPT=transcript)
+    try:
+        raw = gemini_generate("", prompt, json_mode=True)
+        return json.loads(raw)
+    except:
+        return {"is_garbled": False, "confidence": "HIGH"}
+
+def run_intent_classifier(question: str, transcript: str) -> str:
+    import string
+    cleaned = transcript.translate(str.maketrans('', '', string.punctuation)).lower().split()
+    filler_words = {"hmm", "okay", "thank", "you", "yes", "no", "um", "uh", "ah", "like"}
+    
+    meaningful_words = [w for w in cleaned if w not in filler_words]
+    if len(meaningful_words) < 3:
+        return "NO_SPEECH"
+        
+    prompt = INTENT_CLASSIFIER_PROMPT.format(QUESTION=question, RESPONSE=transcript)
+    try:
+        raw = gemini_generate("", prompt, json_mode=True)
+        return json.loads(raw).get("intent", "SUFFICIENT")
+    except:
+        return "SUFFICIENT"
+
 
 @app.post("/interview/respond")
 def get_aria_response(req: RespondRequest):
-    # Fetch session state
-    session_row = db_fetch("SELECT q1, q2, current_q, followups_asked FROM sessions WHERE id=?", [req.session_id])
+    # Fetch silence_retries using a safe query block in case schema hasn't strictly updated yet
+    try:
+        session_row = db_fetch("SELECT q1, q2, interview_state, silence_retries FROM sessions WHERE id=?", [req.session_id])
+        q1, q2, interview_state, silence_retries = session_row
+    except:
+        # Fallback if the column is entirely missing
+        session_row = db_fetch("SELECT q1, q2, interview_state FROM sessions WHERE id=?", [req.session_id])
+        q1, q2, interview_state = session_row
+        silence_retries = 0
+
     if not session_row:
         raise HTTPException(status_code=404, detail="Session not found")
         
-    q1, q2, current_q, followups_asked = session_row
+    silence_retries = silence_retries or 0
+    candidate_latest = req.history[-1].content if req.history and req.history[-1].role == 'user' else ""
     
     if req.is_first_turn:
-        context = f"Starting the interview. Greet the candidate warmly and ask Q1: {q1}"
-        db_exec("UPDATE sessions SET current_q=1, followups_asked=0 WHERE id=?", [req.session_id])
-    else:
-        current_question = q1 if current_q == 1 else q2
-        if current_q == 1:
-            if followups_asked == 0:
-                context = f"Just asked Q1: '{current_question}'. Candidate just answered. Evaluate if answer is sufficient. If sufficient, output [INTENT:NEXT] and ask Q2: '{q2}'. If vague, output [INTENT:PROBE] and ask ONE follow-up. If off-topic, output [INTENT:REDIRECT] and redirect."
-            else:
-                context = f"Asked Q1: '{current_question}' and already did a follow-up. Candidate just answered. You MUST output [INTENT:NEXT] and ask Q2: '{q2}' now."
-        else:
-            if followups_asked == 0:
-                context = f"Just asked Q2: '{current_question}'. Candidate just answered. Evaluate if answer is sufficient. If sufficient, output [INTENT:WRAP] and conclude the interview. If vague, output [INTENT:PROBE] and ask ONE follow-up. If off-topic, output [INTENT:REDIRECT] and redirect."
-            else:
-                context = f"Asked Q2: '{current_question}' and already did a follow-up. Candidate just answered. You MUST output [INTENT:WRAP] and conclude the interview warmly."
+        # Phase 5: Mic check behavior on startup
+        db_exec("UPDATE sessions SET interview_state='MIC_CHECK' WHERE id=?", [req.session_id])
+        return {"text": f"Hello, I’ll be conducting a short interview. There are two questions, each with one follow-up. If I don’t hear a response, I may move ahead. Let’s begin. Before we start, please say anything just so I can hear you clearly.", "intent": "NEXT"}
 
-    # Build prompt
-    chat_history_text = "\n".join(
-        f"{'Candidate' if m.role == 'user' else 'Aria'}: {m.content}"
-        for m in req.history
-    )
-    if chat_history_text:
-        prompt = f"Chat History:\n{chat_history_text}"
-    else:
-        prompt = "Candidate just joined. Please start."
+    if interview_state == 'MIC_CHECK':
+        db_exec("UPDATE sessions SET interview_state='Q1_ASKED' WHERE id=?", [req.session_id])
+        return {"text": f"Great! {q1}", "intent": "NEXT"}
+
+    current_q = q1 if interview_state in ["Q1_ASKED", "Q1_FOLLOWUP_ASKED"] else q2
+    
+    # Phase 3 Audio Check
+    audio_flags = run_audio_cleanup(candidate_latest)
+    if audio_flags.get("is_garbled") and len(candidate_latest.split()) > 0:
+        system_context = "Candidate's audio was garbled. Acknowledge this kindly, paraphrase what you think they said, ask if you got it right, AND continue with the current flow. Don't evaluate."
+        db_exec(f"UPDATE sessions SET interview_state='{interview_state}' WHERE id=?", [req.session_id])
+        full_prompt = ARIA_SYSTEM_PROMPT.format(CONTEXT=system_context)
+        chat_history_text = "\n".join(f"{'Candidate' if m.role == 'user' else 'Aria'}: {m.content}" for m in req.history)
+        text = gemini_generate(full_prompt, f"Chat History:\n{chat_history_text}")
+        return {"text": text, "intent": "PROBE"}
         
-    full_prompt = ARIA_SYSTEM_PROMPT.format(CONTEXT=context)
-    full_text = gemini_generate(full_prompt, prompt)
-
-    # Parse Intent
-    intent_match = re.search(r'\[INTENT:(NEXT|PROBE|REDIRECT|WRAP)\]', full_text)
-    intent = intent_match.group(1) if intent_match else "NEXT"
+    # Phase 2 Intent Classifier
+    intent = run_intent_classifier(current_q, candidate_latest)
     
-    # Clean text
-    spoken_text = re.sub(r'\[INTENT:[A-Z]+\]', '', full_text).strip()
+    system_context = ""
+    next_state = interview_state
+    forced_text = None
     
-    # State transition
-    if intent in ["PROBE", "REDIRECT"]:
-        db_exec("UPDATE sessions SET followups_asked = followups_asked + 1 WHERE id=?", [req.session_id])
-    elif intent == "NEXT":
-        if current_q == 1:
-            db_exec("UPDATE sessions SET current_q = 2, followups_asked = 0 WHERE id=?", [req.session_id])
+    if intent == "NO_SPEECH":
+        if silence_retries == 0:
+            db_exec("UPDATE sessions SET silence_retries = 1 WHERE id=?", [req.session_id])
+            forced_text = "I'm listening."
         else:
-            intent = "WRAP"
-    
-    if intent == "WRAP":
-        db_exec("UPDATE sessions SET status=? WHERE id=?", ["completed_interview", req.session_id])
+            db_exec("UPDATE sessions SET silence_retries = 0 WHERE id=?", [req.session_id])
+            if interview_state in ["Q1_ASKED", "Q1_FOLLOWUP_ASKED"]:
+                forced_text = f"No worries, I'll move ahead to the next question. {q2}"
+                next_state = 'Q2_ASKED'
+            else:
+                forced_text = "No problem at all. Thank you for your time, that concludes the interview."
+                next_state = 'CLOSING'
+                
+    else:
+        db_exec("UPDATE sessions SET silence_retries = 0 WHERE id=?", [req.session_id])
+        if interview_state == 'Q1_ASKED':
+            if intent in ["VAGUE", "TANGENT"]:
+                system_context = f"Candidate's answer was {intent}. Acknowledge their point gently, and ask EXACTLY ONE follow-up question to probe deeper."
+                next_state = 'Q1_FOLLOWUP_ASKED'
+            else: # SUFFICIENT
+                system_context = f"Candidate gave a sufficient answer. Acknowledge it nicely and move on to ask Question 2: {q2}"
+                next_state = 'Q2_ASKED'
+                
+        elif interview_state == 'Q1_FOLLOWUP_ASKED':
+            system_context = f"Acknowledge their answer briefly, then move to Question 2: {q2}"
+            next_state = 'Q2_ASKED'
+            
+        elif interview_state == 'Q2_ASKED':
+            if intent in ["VAGUE", "TANGENT"]:
+                system_context = f"Candidate's answer was {intent}. Acknowledge gently, and ask EXACTLY ONE follow-up question to probe deeper."
+                next_state = 'Q2_FOLLOWUP_ASKED'
+            else:
+                system_context = f"Candidate gave a sufficient answer. Acknowledge warmly and gracefully conclude the interview."
+                next_state = 'CLOSING'
+                
+        elif interview_state == 'Q2_FOLLOWUP_ASKED':
+            system_context = f"Acknowledge their follow-up answer, then gracefully conclude the interview."
+            next_state = 'CLOSING'
+            
+        elif interview_state == 'CLOSING':
+            system_context = "The interview is already over."
+            next_state = 'CLOSING'
 
-    return {"text": spoken_text, "intent": intent}
+    db_exec("UPDATE sessions SET interview_state=? WHERE id=?", [next_state, req.session_id])
+    
+    if forced_text:
+        text = forced_text
+    elif next_state == 'CLOSING' and intent == 'NO_SPEECH':
+        text = "Thank you for your time. That concludes the interview."
+    else:
+        full_prompt = ARIA_SYSTEM_PROMPT.format(CONTEXT=system_context)
+        chat_history_text = "\n".join(f"{'Candidate' if m.role == 'user' else 'Aria'}: {m.content}" for m in req.history)
+        text = gemini_generate(full_prompt, f"Chat History:\n{chat_history_text}")
+    
+    out_intent = "WRAP" if next_state == 'CLOSING' else ("PROBE" if ('FOLLOWUP' in next_state or forced_text) else "NEXT")
+    
+    if next_state == 'CLOSING':
+        db_exec("UPDATE sessions SET status='completed_interview' WHERE id=?", [req.session_id])
+        
+    cleaned_text = re.sub(r'\[INTENT:[A-Z]+\]', '', text).strip()
+    return {"text": cleaned_text, "intent": out_intent}
 
 
 @app.post("/interview/end")
 def end_interview(req: EndRequest):
     try:
-        # Build full transcript
         transcript_lines = []
         for m in req.history:
             speaker = "CANDIDATE" if m.role == "user" else "ARIA"
@@ -283,7 +350,6 @@ def get_report(report_id: str):
     report["duration_seconds"] = row[4]
     return report
 
-
 @app.get("/reports")
 def get_all_reports():
     rows = db_fetchall(
@@ -300,3 +366,4 @@ def get_all_reports():
             "overall_score": scores.get("overall_score", 0)
         })
     return result
+

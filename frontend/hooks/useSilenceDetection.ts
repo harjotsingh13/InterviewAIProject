@@ -6,6 +6,7 @@ export function useSilenceDetection(onSilence: () => void, silenceDuration = 150
   const rafRef = useRef<number | null>(null)
   const activeRef = useRef(false)
   const ctxRef = useRef<AudioContext | null>(null)
+  const hasSpokenRef = useRef(false)
 
   // Initialize context on user gesture
   const initContext = useCallback(() => {
@@ -31,19 +32,29 @@ export function useSilenceDetection(onSilence: () => void, silenceDuration = 150
     source.connect(analyser)
     analyserRef.current = analyser
     activeRef.current = true
+    hasSpokenRef.current = false // reset for each recording
 
     const data = new Uint8Array(analyser.frequencyBinCount)
 
     const check = () => {
       if (!activeRef.current) return
       analyser.getByteFrequencyData(data)
-      const avg = data.reduce((a, b) => a + b, 0) / data.length
+      const avg = data.reduce((a, b: number) => a + b, 0) / data.length
+
+      if (avg >= 10 && !hasSpokenRef.current) {
+         hasSpokenRef.current = true
+         if (silenceTimerRef.current) {
+           clearTimeout(silenceTimerRef.current)
+           silenceTimerRef.current = null
+         }
+      }
 
       if (avg < 10) {
         if (!silenceTimerRef.current) {
+          const timeoutDur = hasSpokenRef.current ? silenceDuration : 5000
           silenceTimerRef.current = setTimeout(() => {
             onSilence()
-          }, silenceDuration)
+          }, timeoutDur)
         }
       } else {
         if (silenceTimerRef.current) {
