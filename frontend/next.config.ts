@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
-// Rebuild triggered to bake NEXT_PUBLIC_API_URL into bundle
-const nextConfig: NextConfig = {};
+const nextConfig: NextConfig = {
+  /* config options here */
+};
 
 export default nextConfig;

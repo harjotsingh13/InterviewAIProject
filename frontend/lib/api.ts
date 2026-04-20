@@ -1,4 +1,4 @@
-const BASE = process.env.NEXT_PUBLIC_API_URL || 'https://interview-ai-flvw.onrender.com'
+const BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 /** Fetch with automatic retry on 429 (rate-limit) responses */
 async function fetchWithRetry(

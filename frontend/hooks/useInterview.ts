@@ -68,8 +68,8 @@ export function useInterview(candidateName: string) {
   }, [isStarted, triggerWrap])
 
   // ── Forward-declared refs so callbacks can reference each other ──────────
-  const startRecordingRef = useRef<(() => Promise<void>) | null>(null)
-  const stopRecordingRef = useRef<(() => void) | null>(null)
+  const startRecordingRef = useRef<() => Promise<void>>()
+  const stopRecordingRef = useRef<() => void>()
 
   // ── Silence handler uses ref to always call latest stopRecording ─────────
   const handleSilence = useCallback(() => {

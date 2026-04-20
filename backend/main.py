@@ -23,14 +23,9 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "*",
-        "https://helpful-praline-eb6304.netlify.app",
-        "http://localhost:3000",
-    ],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=False,
 )
 
 groq_client = groq.Groq(api_key=os.getenv("GROQ_API_KEY"))
