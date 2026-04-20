@@ -4,7 +4,7 @@ import * as THREE from 'three'
 import { OrbState } from '@/types'
 
 const STATE_COLORS: Record<OrbState, number> = {
-  idle: 0x4b5563,
+  idle: 0x64748b,
   listening: 0x6366f1,
   thinking: 0xa855f7,
   speaking: 0xf59e0b,
