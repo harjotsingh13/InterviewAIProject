@@ -2,8 +2,13 @@ import sqlite3
 
 DB_PATH = "cuemath.db"
 
+def _get_conn():
+    conn = sqlite3.connect(DB_PATH, timeout=15)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
@@ -36,19 +41,19 @@ def init_db():
     conn.close()
 
 def db_exec(query, params=[]):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     conn.execute(query, params)
     conn.commit()
     conn.close()
 
 def db_fetch(query, params=[]):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     row = conn.execute(query, params).fetchone()
     conn.close()
     return row
 
 def db_fetchall(query, params=[]):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return rows

@@ -1,19 +1,30 @@
 const BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
-/** Fetch with automatic retry on 429 (rate-limit) responses */
+/** Fetch with automatic retry on 429 and transient errors */
 async function fetchWithRetry(
   url: string,
   options: RequestInit,
   maxRetries = 3
 ): Promise<Response> {
   let delay = 3000 // start at 3 s
+  let lastError: any = null
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const res = await fetch(url, options)
-    if (res.status !== 429 || attempt === maxRetries) return res
+    try {
+      const res = await fetch(url, options)
+      // Retry on rate limit (429) or transient server errors (500, 502, 503, 504)
+      if (![429, 500, 502, 503, 504].includes(res.status) || attempt === maxRetries) {
+        return res
+      }
+    } catch (err) {
+      lastError = err
+      if (attempt === maxRetries) throw err
+    }
     // Wait and retry
     await new Promise(r => setTimeout(r, delay))
     delay = Math.min(delay * 1.5, 12000) // cap at 12 s
   }
+  if (lastError) throw lastError
   throw new Error('Max retries exceeded')
 }
 
