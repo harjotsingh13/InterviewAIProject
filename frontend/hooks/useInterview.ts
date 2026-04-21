@@ -14,6 +14,7 @@ export function useInterview(candidateName: string) {
   const [candidateText, setCandidateText] = useState('')
   const [turnCount, setTurnCount] = useState(0)
   const [isStarted, setIsStarted] = useState(false)
+  const [isConnecting, setIsConnecting] = useState(false)
   const [reportId, setReportId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -192,14 +193,15 @@ export function useInterview(candidateName: string) {
   // ── Begin the interview — fetch opening question first ────────────────────
   const begin = useCallback(async () => {
     try {
+      setIsConnecting(true)
+      setOrbState('thinking')
       initContext()
 
       const { session_id } = await startInterview(candidateNameRef.current)
       sessionIdRef.current = session_id
       startTimeRef.current = Date.now()
       setIsStarted(true)
-
-      setOrbState('thinking')
+      setIsConnecting(false)
 
       const { text: openingText, intent } = await getAriaResponse(
         session_id,
@@ -221,6 +223,7 @@ export function useInterview(candidateName: string) {
         speak(intro, undefined, () => startRecordingRef.current?.())
       }
     } catch (e: any) {
+      setIsConnecting(false)
       console.error('Begin error:', e)
       const msg = e?.message || ''
       if (msg.includes('rate-limited') || msg.includes('quota')) {
@@ -243,7 +246,7 @@ export function useInterview(candidateName: string) {
 
   return {
     orbState, history, ariaText, candidateText,
-    turnCount, isStarted, reportId, error,
+    turnCount, isStarted, isConnecting, reportId, error,
     begin, analyser
   }
 }

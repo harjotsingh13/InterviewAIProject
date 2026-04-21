@@ -19,7 +19,7 @@ export default function InterviewPage() {
 
   const {
     orbState, ariaText, candidateText,
-    turnCount, isStarted, reportId, error,
+    turnCount, isStarted, isConnecting, reportId, error,
     begin, analyser
   } = useInterview(name)
 
@@ -109,10 +109,14 @@ export default function InterviewPage() {
 
         {/* Start button */}
         {!isStarted && (
-          <motion.button initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} onClick={begin}
-            className="mt-8 px-10 py-4 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/20 text-white font-medium transition duration-300 z-10 shadow-2xl backdrop-blur-md relative overflow-hidden group">
-            <span className="relative z-10">Begin Interview</span>
-            <div className="absolute inset-0 bg-gradient-to-r from-violet-600/50 to-indigo-600/50 opacity-0 group-hover:opacity-100 transition duration-300" />
+          <motion.button 
+            initial={{ opacity: 0, scale: 0.9 }} 
+            animate={{ opacity: 1, scale: 1 }} 
+            onClick={begin}
+            disabled={isConnecting}
+            className={`mt-8 px-10 py-4 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/20 text-white font-medium transition duration-300 z-10 shadow-2xl backdrop-blur-md relative overflow-hidden group ${isConnecting ? 'opacity-50 cursor-not-allowed' : ''}`}>
+            <span className="relative z-10">{isConnecting ? 'Connecting...' : 'Begin Interview'}</span>
+            {!isConnecting && <div className="absolute inset-0 bg-gradient-to-r from-violet-600/50 to-indigo-600/50 opacity-0 group-hover:opacity-100 transition duration-300" />}
           </motion.button>
         )}
 
